@@ -5,3 +5,4 @@ psycopg[binary]>=3.2
 django-cors-headers>=4.4
 whitenoise>=6.7
 gunicorn>=23.0
+Pillow>=11.0

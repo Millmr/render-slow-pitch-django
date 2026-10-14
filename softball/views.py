@@ -8,15 +8,21 @@ Access pattern used throughout:
     where players may update their own response.
 """
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import F, Q
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from django.utils.http import quote_etag
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from . import stats as stats_service
+from .logos import process_logo
 from .models import (
     Game,
     GameAvailability,
@@ -37,6 +43,7 @@ from .serializers import (
     LineupInputSerializer,
     MembershipSerializer,
     SeasonSerializer,
+    TeamLogoSerializer,
     TeamSerializer,
 )
 
@@ -62,10 +69,18 @@ class TeamViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = TeamSerializer
-    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+    http_method_names = ["get", "post", "put", "patch", "delete", "head", "options"]
 
     def get_queryset(self):
-        return Team.objects.filter(id__in=visible_team_ids(self.request.user))
+        # The logo bytes are only loaded by the logo endpoint.
+        queryset = Team.objects.filter(id__in=visible_team_ids(self.request.user))
+        return queryset if self.action == "logo" else queryset.defer("logo")
+
+    def update(self, request, *args, **kwargs):
+        # Team details are edited with PATCH; PUT is only for the logo upload.
+        if not kwargs.get("partial"):
+            return self.http_method_not_allowed(request, *args, **kwargs)
+        return super().update(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -85,6 +100,44 @@ class TeamViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         require_manager(self.request.user, instance)
         instance.delete()
+
+    @action(
+        detail=True,
+        methods=["get", "put", "delete"],
+        serializer_class=TeamLogoSerializer,
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def logo(self, request, pk=None):
+        """GET the logo image; PUT a multipart ``logo`` file or DELETE it (managers)."""
+        team = self.get_object()
+
+        if request.method == "GET":
+            if not team.logo:
+                return Response({"detail": "This team has no logo."}, status=status.HTTP_404_NOT_FOUND)
+            etag = quote_etag(team.logo_version or "")
+            if request.headers.get("If-None-Match") == etag:
+                return HttpResponse(status=status.HTTP_304_NOT_MODIFIED)
+            response = HttpResponse(bytes(team.logo), content_type=team.logo_content_type or "image/png")
+            response["ETag"] = etag
+            # Private: only team members can see it. The ?v= in the URL changes with the logo.
+            response["Cache-Control"] = "private, max-age=86400"
+            return response
+
+        require_manager(request.user, team)
+        if request.method == "DELETE":
+            team.logo, team.logo_content_type, team.logo_updated_at = None, "", None
+            team.save(update_fields=["logo", "logo_content_type", "logo_updated_at"])
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        serializer = TeamLogoSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            png = process_logo(serializer.validated_data["logo"])
+        except DjangoValidationError as exc:
+            raise ValidationError({"logo": exc.messages})
+        team.logo, team.logo_content_type, team.logo_updated_at = png, "image/png", timezone.now()
+        team.save(update_fields=["logo", "logo_content_type", "logo_updated_at"])
+        return Response(TeamSerializer(team, context=self.get_serializer_context()).data)
 
     @action(detail=True, methods=["get", "post"], serializer_class=MembershipSerializer)
     def roster(self, request, pk=None):

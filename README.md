@@ -84,6 +84,7 @@ register, login and `/api/health/`.
 | GET | `/auth/me/` | member | Current user |
 | GET / POST | `/teams/` | member | My teams / create one (you become manager) |
 | GET / PATCH / DELETE | `/teams/{id}/` | member / manager | Team details |
+| GET / PUT / DELETE | `/teams/{id}/logo/` | member / manager | Team logo image; PUT a multipart `logo` file (PNG/JPEG/WebP/GIF ≤ 5 MB, stored as a ≤256 px PNG) |
 | GET / POST | `/teams/{id}/roster/` | member / manager | Roster (`?season=`, `?include_inactive=1`) / add player |
 | GET / POST | `/teams/{id}/seasons/` | member / manager | Seasons |
 | GET / PATCH / DELETE | `/seasons/{id}/` | member / manager | Season details |
@@ -139,6 +140,9 @@ Leaderboard `sort` options: `batting_average`, `on_base_percentage`,
   constraints back up the important rules (one stat line per player per game,
   hits = 1B+2B+3B+HR ≤ AB, unique batting slots and positions, completed games
   have scores).
+- **Logos live in the database**, shrunk to a small PNG, because Render's
+  free web service has no persistent disk for uploaded files. `logo_version`
+  on a team changes whenever the logo does, for cache-busting.
 - **Deactivate, don't delete** players (`is_active=false`) so their stats stay.
   A team can't lose its last active manager.
 
