@@ -3,6 +3,7 @@ from collections import Counter
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
+from . import teamsideline
 from .models import (
     Game,
     GameAvailability,
@@ -51,11 +52,16 @@ class TeamSerializer(serializers.ModelSerializer):
 
 
 class SeasonSerializer(serializers.ModelSerializer):
+    league_linked = serializers.SerializerMethodField(help_text="True when the season syncs from a league page.")
+
     class Meta:
         model = Season
-        fields = ["id", "team", "name", "start_date", "end_date", "is_active"]
-        read_only_fields = ["team"]
+        fields = ["id", "team", "name", "start_date", "end_date", "is_active", "league_linked", "league_synced_at"]
+        read_only_fields = ["team", "league_synced_at"]
         validators = []  # uniqueness is checked in validate() with a friendlier message
+
+    def get_league_linked(self, season):
+        return bool(season.league_url)
 
     def _team(self):
         return self.instance.team if self.instance else self.context["team"]
@@ -350,3 +356,17 @@ class PlateAppearanceUpdateSerializer(serializers.Serializer):
     result = serializers.ChoiceField(choices=PlateAppearance.Result.choices, required=False)
     membership_id = serializers.IntegerField(required=False)
     inning = serializers.IntegerField(required=False, min_value=1, max_value=30)
+
+
+class LeaguePreviewSerializer(serializers.Serializer):
+    url = serializers.CharField(max_length=1000, trim_whitespace=True)
+
+    def validate_url(self, value):
+        try:
+            return teamsideline.validate_url(value)
+        except teamsideline.LeaguePageError as exc:
+            raise serializers.ValidationError(str(exc))
+
+
+class LeagueLinkSerializer(LeaguePreviewSerializer):
+    team_name = serializers.CharField(max_length=100, trim_whitespace=True)

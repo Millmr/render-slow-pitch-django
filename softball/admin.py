@@ -19,6 +19,7 @@ from .models import (
 class SeasonInline(admin.TabularInline):
     model = Season
     extra = 0
+    fields = ["name", "start_date", "end_date", "is_active"]
 
 
 class MembershipInline(admin.TabularInline):
@@ -44,8 +45,9 @@ class TeamAdmin(admin.ModelAdmin):
 
 @admin.register(Season)
 class SeasonAdmin(admin.ModelAdmin):
-    list_display = ["name", "team", "start_date", "end_date", "is_active"]
+    list_display = ["name", "team", "start_date", "end_date", "is_active", "league_synced_at"]
     list_filter = ["is_active", "team"]
+    readonly_fields = ["league_name", "league_synced_at"]
 
 
 @admin.register(TeamMembership)
@@ -69,8 +71,9 @@ class PlateAppearanceInline(admin.TabularInline):
 
 @admin.register(Game)
 class GameAdmin(admin.ModelAdmin):
-    list_display = ["__str__", "season", "status", "team_score", "opponent_score", "result"]
+    list_display = ["__str__", "season", "status", "team_score", "opponent_score", "result", "league_key"]
     list_filter = ["status", "season__team"]
+    readonly_fields = ["league_key"]
     inlines = [PlateAppearanceInline, PlayerGameStatsInline]
 
 

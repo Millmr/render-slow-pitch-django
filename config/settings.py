@@ -133,9 +133,13 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
-    # Only views with a throttle_scope (login/register) are throttled.
+    # Only views with a throttle_scope (login/register, league sync) are throttled.
     "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
-    "DEFAULT_THROTTLE_RATES": {"auth": os.environ.get("AUTH_THROTTLE_RATE", "20/minute")},
+    "DEFAULT_THROTTLE_RATES": {
+        "auth": os.environ.get("AUTH_THROTTLE_RATE", "20/minute"),
+        # Each league request downloads the TeamSideline page.
+        "league": os.environ.get("LEAGUE_THROTTLE_RATE", "20/minute"),
+    },
     "TEST_REQUEST_DEFAULT_FORMAT": "json",
 }
 

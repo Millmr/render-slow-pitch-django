@@ -18,11 +18,13 @@ from django.utils.http import quote_etag
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from . import book as book_service
+from . import league as league_service
 from . import stats as stats_service
+from .teamsideline import LeagueFetchError, LeaguePageError
 from .logos import process_logo
 from .models import (
     Game,
@@ -42,6 +44,8 @@ from .serializers import (
     GameResultSerializer,
     GameSerializer,
     GameStatsInputSerializer,
+    LeagueLinkSerializer,
+    LeaguePreviewSerializer,
     LineupInputSerializer,
     MembershipSerializer,
     PlateAppearanceInputSerializer,
@@ -181,6 +185,22 @@ class TeamViewSet(viewsets.ModelViewSet):
 # --------------------------------------------------------------------------- seasons
 
 
+class LeagueUnavailable(APIException):
+    status_code = status.HTTP_502_BAD_GATEWAY
+    default_detail = "Couldn't read the league page."
+    default_code = "league_unavailable"
+
+
+def _load_league(url, season, field="url"):
+    """Fetch + parse, mapping problems to API errors."""
+    try:
+        return league_service.load(url, fallback_year=season.start_date.year)
+    except LeagueFetchError as exc:
+        raise LeagueUnavailable(str(exc))
+    except LeaguePageError as exc:
+        raise ValidationError({field: [str(exc)]})
+
+
 class SeasonViewSet(
     mixins.RetrieveModelMixin,
     mixins.UpdateModelMixin,
@@ -188,15 +208,27 @@ class SeasonViewSet(
     viewsets.GenericViewSet,
 ):
     """
-    games:        GET the season's schedule (``?status=scheduled``); POST to schedule a game.
-    leaderboard:  Ranked season stats. ``?sort=`` one of the whitelisted stats.
+    games:          GET the season's schedule (``?status=scheduled``); POST to schedule a game.
+    leaderboard:    Ranked season stats. ``?sort=`` one of the whitelisted stats.
+    league:         GET the league link and standings; PUT ``{"url", "team_name"}`` to link
+                    and sync (managers); DELETE to unlink.
+    league/preview: POST ``{"url"}`` to see the league name and teams before linking.
+    league/sync:    POST to pull the latest schedule and scores (managers).
     """
 
     serializer_class = SeasonSerializer
-    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+    http_method_names = ["get", "post", "put", "patch", "delete", "head", "options"]
+    # Set per action below; DRF only accepts action kwargs for attributes the view already has.
+    throttle_scope = None
 
     def get_queryset(self):
         return Season.objects.filter(team_id__in=visible_team_ids(self.request.user)).select_related("team")
+
+    def update(self, request, *args, **kwargs):
+        # Seasons are edited with PATCH; PUT is only for linking the league.
+        if not kwargs.get("partial"):
+            return self.http_method_not_allowed(request, *args, **kwargs)
+        return super().update(request, *args, **kwargs)
 
     def perform_update(self, serializer):
         require_manager(self.request.user, serializer.instance.team)
@@ -225,6 +257,73 @@ class SeasonViewSet(
                 raise ValidationError({"status": f"Choose one of: {', '.join(Game.Status.values)}."})
             games = games.filter(status=status_filter)
         return Response(GameSerializer(games, many=True, context=context).data)
+
+    @action(
+        detail=True,
+        methods=["get", "put", "delete"],
+        serializer_class=LeagueLinkSerializer,
+        throttle_scope="league",
+    )
+    def league(self, request, pk=None):
+        season = self.get_object()
+        if request.method == "GET":
+            return Response(league_service.payload(season))
+
+        require_manager(request.user, season.team)
+        if request.method == "DELETE":
+            # Games keep their league_key, so linking again matches them up.
+            season.league_url = season.league_team_name = season.league_name = ""
+            season.league_standings, season.league_synced_at = [], None
+            season.save(
+                update_fields=["league_url", "league_team_name", "league_name", "league_standings", "league_synced_at"]
+            )
+            return Response(league_service.payload(season))
+
+        serializer = LeagueLinkSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        page = _load_league(serializer.validated_data["url"], season)
+        team_name = page.find_team(serializer.validated_data["team_name"])
+        if team_name is None:
+            raise ValidationError({"team_name": ["That team isn't on the league page."], "teams": page.teams})
+        season.league_url = serializer.validated_data["url"]
+        season.league_team_name = team_name
+        season.save(update_fields=["league_url", "league_team_name"])
+        summary = league_service.sync(season, page)
+        season.refresh_from_db()
+        return Response(league_service.payload(season) | {"sync": summary.as_dict()})
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="league/preview",
+        serializer_class=LeaguePreviewSerializer,
+        throttle_scope="league",
+    )
+    def league_preview(self, request, pk=None):
+        season = self.get_object()
+        require_manager(request.user, season.team)
+        serializer = LeaguePreviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        page = _load_league(serializer.validated_data["url"], season)
+        return Response({"league_name": page.name, "teams": page.teams})
+
+    @action(detail=True, methods=["post"], url_path="league/sync", throttle_scope="league")
+    def league_sync(self, request, pk=None):
+        season = self.get_object()
+        require_manager(request.user, season.team)
+        if not season.league_url:
+            raise ValidationError({"detail": "Link this season to its league page first."})
+        try:
+            page = league_service.load(season.league_url, fallback_year=season.start_date.year)
+        except LeagueFetchError as exc:
+            raise LeagueUnavailable(str(exc))
+        except LeaguePageError:
+            raise LeagueUnavailable("The league page changed and couldn't be read. Nothing was updated.")
+        if page.find_team(season.league_team_name) is None:
+            raise ValidationError({"detail": f"{season.league_team_name} isn't on the league page anymore."})
+        summary = league_service.sync(season, page)
+        season.refresh_from_db()
+        return Response(league_service.payload(season) | {"sync": summary.as_dict()})
 
     @action(detail=True, methods=["get"])
     def leaderboard(self, request, pk=None):
