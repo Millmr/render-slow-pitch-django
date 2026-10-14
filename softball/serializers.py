@@ -25,11 +25,16 @@ def _duplicates(values):
 
 class TeamSerializer(serializers.ModelSerializer):
     my_role = serializers.SerializerMethodField()
+    logo_version = serializers.CharField(
+        read_only=True,
+        allow_null=True,
+        help_text="Null without a logo. Fetch GET /api/teams/{id}/logo/?v=<this> to display it.",
+    )
 
     class Meta:
         model = Team
-        fields = ["id", "name", "created_by", "created_at", "my_role"]
-        read_only_fields = ["created_by", "created_at"]
+        fields = ["id", "name", "created_by", "created_at", "my_role", "logo_version"]
+        read_only_fields = ["created_by", "created_at", "logo_version"]
 
     def get_my_role(self, team):
         request = self.context.get("request")
@@ -213,6 +218,10 @@ class GameSerializer(serializers.ModelSerializer):
             instance.team_score = None
             instance.opponent_score = None
         return super().update(instance, validated_data)
+
+
+class TeamLogoSerializer(serializers.Serializer):
+    logo = serializers.ImageField(help_text="PNG, JPEG, WebP or GIF, up to 5 MB. Stored as a PNG up to 256 px.")
 
 
 class GameResultSerializer(serializers.Serializer):

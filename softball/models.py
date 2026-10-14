@@ -21,12 +21,23 @@ class Team(models.Model):
         related_name="created_teams",
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    # The logo is stored in the database as a small PNG (see softball/logos.py)
+    # because Render's free web service has no persistent disk for uploads.
+    logo = models.BinaryField(null=True, blank=True, editable=False)
+    logo_content_type = models.CharField(max_length=50, blank=True, default="", editable=False)
+    logo_updated_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     class Meta:
         ordering = ["name", "id"]
 
     def __str__(self):
         return self.name
+
+    @property
+    def logo_version(self):
+        """Changes whenever the logo does, so clients can cache by it."""
+        # Uses only the timestamp so listing teams never loads the image bytes.
+        return str(int(self.logo_updated_at.timestamp() * 1000)) if self.logo_updated_at else None
 
 
 class Season(models.Model):
