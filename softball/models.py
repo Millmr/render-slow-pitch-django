@@ -47,6 +47,13 @@ class Season(models.Model):
     end_date = models.DateField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
 
+    # Optional link to the league's public schedule (see softball/league.py).
+    league_url = models.URLField(max_length=1000, blank=True, help_text="TeamSideline standings/schedule page.")
+    league_team_name = models.CharField(max_length=100, blank=True, help_text="This team's name on the league page.")
+    league_name = models.CharField(max_length=200, blank=True, editable=False)
+    league_standings = models.JSONField(default=list, blank=True, editable=False)
+    league_synced_at = models.DateTimeField(null=True, blank=True, editable=False)
+
     class Meta:
         ordering = ["-start_date", "-id"]
         constraints = [
@@ -162,12 +169,20 @@ class Game(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.SCHEDULED)
     team_score = models.PositiveIntegerField(null=True, blank=True)
     opponent_score = models.PositiveIntegerField(null=True, blank=True)
+    # Set when the game came from (or was matched to) the league schedule, so
+    # later syncs update it instead of adding a duplicate. Empty otherwise.
+    league_key = models.CharField(max_length=40, blank=True, default="", editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["scheduled_at", "id"]
         constraints = [
+            models.UniqueConstraint(
+                fields=["season", "league_key"],
+                condition=~Q(league_key=""),
+                name="unique_league_game_per_season",
+            ),
             models.CheckConstraint(
                 condition=~Q(status="completed") | Q(team_score__isnull=False, opponent_score__isnull=False),
                 name="completed_game_has_scores",

@@ -66,6 +66,8 @@ softball/
   permissions.py   team-scoped access helpers
   serializers.py   validation for roster, games, lineups, stats
   stats.py         the one place batting stats are calculated
+  teamsideline.py  reads a TeamSideline standings/schedule page (no Django imports)
+  league.py        syncs a season's games and standings from that page
   views.py         DRF viewsets + bulk actions
   tests/           API tests for every safeguard in the spec
 docker/            container entrypoint
@@ -99,6 +101,9 @@ register, login and `/api/health/`.
 | GET / PUT | `/games/{id}/stats/` | member / manager | Every player's line in one request |
 | GET / POST | `/games/{id}/book/` | member / manager or scorekeeper | Scorebook: inning, outs, who's up, every plate appearance; POST `{"result": "1B"}` records the next batter |
 | PATCH / DELETE | `/games/{id}/book/{pa_id}/` | manager or scorekeeper | Fix a play (`result`, `membership_id`, `inning`) or remove it |
+| POST | `/seasons/{id}/league/preview/` | manager | `{"url"}` → the league's name and team names, to pick yours |
+| GET / PUT / DELETE | `/seasons/{id}/league/` | member / manager | League link + standings; PUT `{"url", "team_name"}` links and syncs; DELETE unlinks |
+| POST | `/seasons/{id}/league/sync/` | manager | Pull the latest schedule and scores from the league page |
 
 Lineup PUT body:
 
@@ -152,6 +157,19 @@ Leaderboard `sort` options: `batting_average`, `on_base_percentage`,
   game has plays in the book, its stat lines are rebuilt from them on every
   change and the manual stats endpoint is locked for that game. Walks and
   sac flies aren't at-bats; OBP is (H + BB) / (AB + BB + SF).
+- **League schedule (TeamSideline).** There's no API, so the server downloads
+  the public "print view" page (`.../StandingsResultsPrintView.aspx?d=...`)
+  and reads its grids by their cell ids. Only `https://teamsideline.com`
+  links are accepted (redirects included). A sync creates the team's games,
+  keeps opponent/time/field in step, adopts a hand-added game at the same
+  start time, and fills in posted scores without overwriting one typed into
+  the app (it reports the mismatch). A league game that disappears (a
+  rain-out) is cancelled unless it has stats. Byes and holidays are skipped.
+  Playoff games are matched by game number, so "G2 Winner" becomes the real
+  opponent on a later sync. Standings are stored without the coach column
+  (names and phone numbers). Times are read in `DJANGO_TIME_ZONE`. Sync runs
+  when a manager asks for it; if the page layout changes, sync stops with a
+  502 instead of importing anything.
 - **Deactivate, don't delete** players (`is_active=false`) so their stats stay.
   A team can't lose its last active manager.
 
@@ -167,6 +185,8 @@ Leaderboard `sort` options: `batting_average`, `on_base_percentage`,
 | `CSRF_TRUSTED_ORIGINS` | empty | Needed for admin behind a custom domain |
 | `DJANGO_SECURE_SSL_REDIRECT` | `0` | Turn on once HTTPS is confirmed working |
 | `AUTH_THROTTLE_RATE` | `20/minute` | Login/register rate limit |
+| `LEAGUE_THROTTLE_RATE` | `20/minute` | League link/sync requests per user (each one downloads the league page) |
+| `DJANGO_TIME_ZONE` | `America/Chicago` | Also the time zone league schedule times are read in |
 | `DJANGO_MIGRATE` | `1` | Set `0` to skip the automatic `migrate` in the container entrypoint |
 | `WEB_CONCURRENCY` | `2` | gunicorn workers |
 
