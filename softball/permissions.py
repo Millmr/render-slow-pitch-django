@@ -30,3 +30,16 @@ def is_manager(user, team) -> bool:
 def require_manager(user, team) -> None:
     if not is_manager(user, team):
         raise PermissionDenied("Only team managers can do that.")
+
+
+BOOK_ROLES = (TeamMembership.Role.MANAGER, TeamMembership.Role.SCOREKEEPER)
+
+
+def can_keep_book(user, team) -> bool:
+    """Managers and scorekeepers record plays in the book."""
+    return active_memberships(user).filter(team=team, role__in=BOOK_ROLES).exists()
+
+
+def require_book_keeper(user, team) -> None:
+    if not can_keep_book(user, team):
+        raise PermissionDenied("Only managers and scorekeepers can keep the book.")

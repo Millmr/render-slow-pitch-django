@@ -21,6 +21,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
+from . import book as book_service
 from . import stats as stats_service
 from .logos import process_logo
 from .models import (
@@ -28,13 +29,14 @@ from .models import (
     GameAvailability,
     Lineup,
     LineupSpot,
+    PlateAppearance,
     PlayerGameStats,
     Season,
     Team,
     TeamMembership,
     eligible_memberships,
 )
-from .permissions import is_manager, require_manager, visible_team_ids
+from .permissions import can_keep_book, is_manager, require_book_keeper, require_manager, visible_team_ids
 from .serializers import (
     AvailabilityUpdateSerializer,
     GameResultSerializer,
@@ -42,6 +44,8 @@ from .serializers import (
     GameStatsInputSerializer,
     LineupInputSerializer,
     MembershipSerializer,
+    PlateAppearanceInputSerializer,
+    PlateAppearanceUpdateSerializer,
     SeasonSerializer,
     TeamLogoSerializer,
     TeamSerializer,
@@ -233,7 +237,7 @@ class SeasonViewSet(
                 "season": season.id,
                 "sort": sort,
                 "sort_options": list(stats_service.LEADERBOARD_SORTS),
-                "obp_note": "Simplified OBP: (H + BB) / (AB + BB).",
+                "obp_note": "OBP is (H + BB) / (AB + BB + SF).",
                 "players": stats_service.leaderboard(season, sort),
             }
         )
@@ -354,6 +358,8 @@ def _game_stats_payload(game):
         "game": game.id,
         "status": game.status,
         "counts_toward_season": game.status == Game.Status.COMPLETED,
+        # When the game was scored in the book, these lines are built from it.
+        "from_book": game.plate_appearances.exists(),
         "players": [stats_service.game_line(row) for row in rows],
     }
 
@@ -489,6 +495,8 @@ class GameViewSet(
         require_manager(request.user, game.team)
         if game.status == Game.Status.CANCELLED:
             raise ValidationError({"detail": "This game was cancelled."})
+        if game.plate_appearances.exists():
+            raise ValidationError({"detail": "This game is scored in the book. Fix plays there instead."})
         serializer = GameStatsInputSerializer(data=request.data, context={"season": game.season})
         serializer.is_valid(raise_exception=True)
 
@@ -506,3 +514,78 @@ class GameViewSet(
                 ]
             )
         return Response(_game_stats_payload(game))
+
+    # ------------------------------------------------------------------ book
+
+    def _book_response(self, game, status_code=status.HTTP_200_OK):
+        payload = book_service.payload(game, can_edit=can_keep_book(self.request.user, game.team))
+        return Response(payload, status=status_code)
+
+    def _book_member(self, game, membership_id):
+        member = eligible_memberships(game.season).filter(pk=membership_id).first()
+        if member is None:
+            raise ValidationError({"membership_id": "That player isn't on this season's active roster."})
+        return member
+
+    @action(detail=True, methods=["get", "post"], serializer_class=PlateAppearanceInputSerializer)
+    def book(self, request, pk=None):
+        """GET the scorebook; POST ``{"result": "1B"}`` to record the next plate appearance."""
+        game = self.get_object()
+        if request.method == "GET":
+            return self._book_response(game)
+
+        require_book_keeper(request.user, game.team)
+        if game.status == Game.Status.CANCELLED:
+            raise ValidationError({"detail": "This game was cancelled."})
+        serializer = PlateAppearanceInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        with transaction.atomic():
+            Game.objects.select_for_update().get(pk=game.pk)  # one play at a time
+            pas = book_service.plate_appearances(game)
+            current = book_service.state(pas, [spot.membership_id for spot in book_service.lineup(game)])
+            membership_id = data.get("membership_id") or current["next_batter_id"]
+            if not membership_id:
+                raise ValidationError({"membership_id": "This game has no lineup yet, so pick who's batting."})
+            member = self._book_member(game, membership_id)
+            PlateAppearance.objects.create(
+                game=game,
+                membership=member,
+                inning=data.get("inning") or current["inning"],
+                sequence=(pas[-1].sequence if pas else 0) + 1,
+                result=data["result"],
+                recorded_by=request.user,
+            )
+            book_service.rebuild_stats(game)
+        return self._book_response(game, status.HTTP_201_CREATED)
+
+    @action(
+        detail=True,
+        methods=["patch", "delete"],
+        url_path=r"book/(?P<pa_id>[0-9]+)",
+        serializer_class=PlateAppearanceUpdateSerializer,
+    )
+    def book_entry(self, request, pk=None, pa_id=None):
+        """PATCH to fix a plate appearance (result, batter or inning); DELETE to remove it."""
+        game = self.get_object()
+        require_book_keeper(request.user, game.team)
+        plate_appearance = get_object_or_404(PlateAppearance, pk=pa_id, game=game)
+
+        with transaction.atomic():
+            Game.objects.select_for_update().get(pk=game.pk)
+            if request.method == "DELETE":
+                plate_appearance.delete()
+            else:
+                serializer = PlateAppearanceUpdateSerializer(data=request.data, partial=True)
+                serializer.is_valid(raise_exception=True)
+                data = serializer.validated_data
+                if "membership_id" in data:
+                    plate_appearance.membership = self._book_member(game, data["membership_id"])
+                if "result" in data:
+                    plate_appearance.result = data["result"]
+                if "inning" in data:
+                    plate_appearance.inning = data["inning"]
+                plate_appearance.save()
+            book_service.rebuild_stats(game)
+        return self._book_response(game)
