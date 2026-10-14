@@ -5,15 +5,15 @@ box score — goes through ``with_rates`` so the formulas only live in one place
 Season numbers come from ORM aggregation over ``PlayerGameStats`` for
 *completed* games only; nothing is precomputed or stored twice.
 
-On-base percentage uses a simplified formula, (H + BB) / (AB + BB), because
-the app doesn't record hit-by-pitches or sacrifice flies.
+On-base percentage is (H + BB) / (AB + BB + SF). Hit-by-pitches aren't
+recorded (they're rare in slow-pitch), so that's the official formula minus HBP.
 """
 
 from django.db.models import Count, Sum
 
 from .models import Game, PlayerGameStats
 
-COUNTING_FIELDS = ("at_bats", "hits", "singles", "doubles", "triples", "home_runs", "walks")
+COUNTING_FIELDS = ("at_bats", "hits", "singles", "doubles", "triples", "home_runs", "walks", "sac_flies")
 RATE_FIELDS = ("batting_average", "on_base_percentage", "slugging_percentage")
 
 # Whitelist of leaderboard sort keys. Query parameters never reach the ORM.
@@ -50,10 +50,11 @@ def with_rates(totals: dict) -> dict:
     """Add derived stats to a dict containing the counting fields."""
     line = dict(totals)
     at_bats, hits, walks = line["at_bats"], line["hits"], line["walks"]
+    sac_flies = line.get("sac_flies", 0)
     total_bases = line["singles"] + 2 * line["doubles"] + 3 * line["triples"] + 4 * line["home_runs"]
     line["total_bases"] = total_bases
     line["batting_average"] = rate(hits, at_bats)
-    line["on_base_percentage"] = rate(hits + walks, at_bats + walks)
+    line["on_base_percentage"] = rate(hits + walks, at_bats + walks + sac_flies)
     line["slugging_percentage"] = rate(total_bases, at_bats)
     for field in RATE_FIELDS:
         line[f"{field}_display"] = format_rate(line[field])

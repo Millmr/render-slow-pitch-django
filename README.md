@@ -97,6 +97,8 @@ register, login and `/api/health/`.
 | GET / PUT | `/games/{id}/lineup/` | member / manager | Whole lineup in one request |
 | POST | `/games/{id}/result/` | manager | `{"team_score", "opponent_score"}`, marks completed |
 | GET / PUT | `/games/{id}/stats/` | member / manager | Every player's line in one request |
+| GET / POST | `/games/{id}/book/` | member / manager or scorekeeper | Scorebook: inning, outs, who's up, every plate appearance; POST `{"result": "1B"}` records the next batter |
+| PATCH / DELETE | `/games/{id}/book/{pa_id}/` | manager or scorekeeper | Fix a play (`result`, `membership_id`, `inning`) or remove it |
 
 Lineup PUT body:
 
@@ -143,6 +145,13 @@ Leaderboard `sort` options: `batting_average`, `on_base_percentage`,
 - **Logos live in the database**, shrunk to a small PNG, because Render's
   free web service has no persistent disk for uploaded files. `logo_version`
   on a team changes whenever the logo does, for cache-busting.
+- **The book.** Managers and scorekeepers (a roster role that's otherwise
+  a player) record each plate appearance: `1B`, `2B`, `3B`, `HR`, `BB`, `OUT`
+  or `SF`. The next batter comes from the lineup and the inning advances
+  after three outs (`OUT` or `SF`); pass `inning` to end one early. Once a
+  game has plays in the book, its stat lines are rebuilt from them on every
+  change and the manual stats endpoint is locked for that game. Walks and
+  sac flies aren't at-bats; OBP is (H + BB) / (AB + BB + SF).
 - **Deactivate, don't delete** players (`is_active=false`) so their stats stay.
   A team can't lose its last active manager.
 

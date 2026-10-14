@@ -70,6 +70,8 @@ class TeamMembership(models.Model):
 
     class Role(models.TextChoices):
         MANAGER = "manager", "Manager"
+        # Keeps the book (records plate appearances) but otherwise a player.
+        SCOREKEEPER = "scorekeeper", "Scorekeeper"
         PLAYER = "player", "Player"
 
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="memberships")
@@ -271,6 +273,7 @@ class PlayerGameStats(models.Model):
     triples = models.PositiveIntegerField(default=0)
     home_runs = models.PositiveIntegerField(default=0)
     walks = models.PositiveIntegerField(default=0)
+    sac_flies = models.PositiveIntegerField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -293,3 +296,40 @@ class PlayerGameStats(models.Model):
             raise ValidationError({"hits": "Hits must equal singles + doubles + triples + home runs."})
         if self.hits > self.at_bats:
             raise ValidationError({"hits": "Hits can't exceed at-bats."})
+
+
+class PlateAppearance(models.Model):
+    """One trip to the plate, recorded live in the book.
+
+    When a game has plate appearances, its PlayerGameStats are rebuilt from
+    them (see softball/book.py), so the book is the single source of truth.
+    """
+
+    class Result(models.TextChoices):
+        SINGLE = "1B", "Single"
+        DOUBLE = "2B", "Double"
+        TRIPLE = "3B", "Triple"
+        HOME_RUN = "HR", "Home run"
+        WALK = "BB", "Walk"
+        OUT = "OUT", "Out"
+        SAC_FLY = "SF", "Sacrifice fly"
+
+    game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="plate_appearances")
+    membership = models.ForeignKey(TeamMembership, on_delete=models.CASCADE, related_name="plate_appearances")
+    inning = models.PositiveSmallIntegerField()
+    sequence = models.PositiveIntegerField(help_text="Order within the game, starting at 1.")
+    result = models.CharField(max_length=3, choices=Result.choices)
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["sequence"]
+        constraints = [
+            models.UniqueConstraint(fields=["game", "sequence"], name="unique_plate_appearance_order"),
+            models.CheckConstraint(condition=Q(inning__gte=1), name="plate_appearance_inning_starts_at_one"),
+        ]
+
+    def __str__(self):
+        return f"{self.membership.display_name}: {self.result} (inning {self.inning})"

@@ -7,6 +7,7 @@ from .models import (
     Game,
     GameAvailability,
     LineupSpot,
+    PlateAppearance,
     Season,
     Team,
     TeamMembership,
@@ -43,9 +44,10 @@ class TeamSerializer(serializers.ModelSerializer):
         roles = set(
             team.memberships.filter(user=request.user, is_active=True).values_list("role", flat=True)
         )
-        if TeamMembership.Role.MANAGER in roles:
-            return TeamMembership.Role.MANAGER
-        return TeamMembership.Role.PLAYER if roles else None
+        for role in (TeamMembership.Role.MANAGER, TeamMembership.Role.SCOREKEEPER, TeamMembership.Role.PLAYER):
+            if role in roles:
+                return role
+        return None
 
 
 class SeasonSerializer(serializers.ModelSerializer):
@@ -295,6 +297,7 @@ class PlayerStatsInputSerializer(serializers.Serializer):
     triples = serializers.IntegerField(min_value=0, default=0)
     home_runs = serializers.IntegerField(min_value=0, default=0)
     walks = serializers.IntegerField(min_value=0, default=0)
+    sac_flies = serializers.IntegerField(min_value=0, default=0)
 
     def validate(self, attrs):
         breakdown = attrs["singles"] + attrs["doubles"] + attrs["triples"] + attrs["home_runs"]
@@ -328,3 +331,22 @@ class GameStatsInputSerializer(serializers.Serializer):
         if invalid := [i for i in ids if i not in valid_ids]:
             raise serializers.ValidationError(f"Not on this season's roster: membership {invalid}.")
         return players
+
+
+# --------------------------------------------------------------------------- book
+
+
+class PlateAppearanceInputSerializer(serializers.Serializer):
+    result = serializers.ChoiceField(choices=PlateAppearance.Result.choices)
+    membership_id = serializers.IntegerField(
+        required=False, help_text="Who batted. Defaults to the next batter in the lineup."
+    )
+    inning = serializers.IntegerField(
+        required=False, min_value=1, max_value=30, help_text="Defaults to the current inning."
+    )
+
+
+class PlateAppearanceUpdateSerializer(serializers.Serializer):
+    result = serializers.ChoiceField(choices=PlateAppearance.Result.choices, required=False)
+    membership_id = serializers.IntegerField(required=False)
+    inning = serializers.IntegerField(required=False, min_value=1, max_value=30)

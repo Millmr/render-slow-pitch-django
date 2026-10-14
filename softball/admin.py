@@ -3,7 +3,17 @@ import base64
 from django.contrib import admin
 from django.utils.html import format_html
 
-from .models import Game, GameAvailability, Lineup, LineupSpot, PlayerGameStats, Season, Team, TeamMembership
+from .models import (
+    Game,
+    GameAvailability,
+    Lineup,
+    LineupSpot,
+    PlateAppearance,
+    PlayerGameStats,
+    Season,
+    Team,
+    TeamMembership,
+)
 
 
 class SeasonInline(admin.TabularInline):
@@ -51,11 +61,17 @@ class PlayerGameStatsInline(admin.TabularInline):
     extra = 0
 
 
+class PlateAppearanceInline(admin.TabularInline):
+    model = PlateAppearance
+    extra = 0
+    fields = ["sequence", "inning", "membership", "result"]
+
+
 @admin.register(Game)
 class GameAdmin(admin.ModelAdmin):
     list_display = ["__str__", "season", "status", "team_score", "opponent_score", "result"]
     list_filter = ["status", "season__team"]
-    inlines = [PlayerGameStatsInline]
+    inlines = [PlateAppearanceInline, PlayerGameStatsInline]
 
 
 @admin.register(GameAvailability)
